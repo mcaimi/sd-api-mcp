@@ -8,7 +8,7 @@ mcp = MCPServer(
     name="sd-api",
     instructions=(
         "Stable Diffusion image generation API. "
-        "Supports SD1.5, SDXL, and Illustrious XL pipelines for text-to-image generation, "
+        "Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, "
         "inpainting, model comparison, and model merging. "
         "Generation jobs are asynchronous — use generate_image/inpaint_image for automatic "
         "polling, or submit_generate/submit_inpaint + get_job_status for manual control."
@@ -28,6 +28,7 @@ def _build_generation_body(
     scheduler: str = "DPM++ 2M",
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
+    true_cfg_scale: float | None = None,
 ) -> dict:
     body: dict = {
         "positive_prompt": positive_prompt,
@@ -44,6 +45,8 @@ def _build_generation_body(
         body["loras"] = loras
     if custom_vae:
         body["custom_vae"] = custom_vae
+    if true_cfg_scale is not None:
+        body["true_cfg_scale"] = true_cfg_scale
     return body
 
 
@@ -65,26 +68,32 @@ async def generate_image(
     scheduler: str = "DPM++ 2M",
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
+    true_cfg_scale: float | None = None,
 ) -> str:
     """Generate an image using Stable Diffusion. Waits for completion and returns the result.
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
         width: Image width in pixels (256-2048)
         height: Image height in pixels (256-2048)
         steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30)
+        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
+            distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name
+        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
+            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
+        true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
+            enable negative_prompt. Ignored by other pipelines
     """
     body = _build_generation_body(
         positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale,
     )
     job = await client.generate(pipeline, body)
     result = await client.poll_job(job["job_id"])
@@ -105,31 +114,42 @@ async def inpaint_image(
     scheduler: str = "DPM++ 2M",
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
+    true_cfg_scale: float | None = None,
+    strength: float | None = None,
 ) -> str:
     """Inpaint an image using Stable Diffusion. Waits for completion and returns the result.
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
         steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30)
+        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
+            distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name
+        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
+            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
+        true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
+            enable negative_prompt. Ignored by other pipelines
+        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
+            0.6 if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
         positive_prompt, model_checkpoint, negative_prompt,
         512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale,
     )
     body.pop("width")
     body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
+    if strength is not None:
+        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     result = await client.poll_job(job["job_id"])
     return json.dumps(result, indent=2)
@@ -153,26 +173,32 @@ async def submit_generate(
     scheduler: str = "DPM++ 2M",
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
+    true_cfg_scale: float | None = None,
 ) -> str:
     """Submit an image generation job without waiting. Returns the job ID for manual polling.
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
         width: Image width in pixels (256-2048)
         height: Image height in pixels (256-2048)
         steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30)
+        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
+            distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name
+        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
+            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
+        true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
+            enable negative_prompt. Ignored by other pipelines
     """
     body = _build_generation_body(
         positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale,
     )
     job = await client.generate(pipeline, body)
     return json.dumps(job, indent=2)
@@ -192,31 +218,42 @@ async def submit_inpaint(
     scheduler: str = "DPM++ 2M",
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
+    true_cfg_scale: float | None = None,
+    strength: float | None = None,
 ) -> str:
     """Submit an inpainting job without waiting. Returns the job ID for manual polling.
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
         steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30)
+        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
+            distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name
+        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
+            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
+        true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
+            enable negative_prompt. Ignored by other pipelines
+        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
+            0.6 if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
         positive_prompt, model_checkpoint, negative_prompt,
         512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale,
     )
     body.pop("width")
     body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
+    if strength is not None:
+        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     return json.dumps(job, indent=2)
 
@@ -233,8 +270,9 @@ async def batch_generate(
     """Submit a batch of image generation requests (up to 10).
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
-        requests: List of generation request objects, each with at least "positive_prompt" and "model_checkpoint"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        requests: List of generation request objects, each with at least "positive_prompt" and "model_checkpoint".
+            For "flux", requests may also include "true_cfg_scale" (float, 1-10, default 1.0)
     """
     result = await client.batch_generate(pipeline, {"requests": requests})
     return json.dumps(result, indent=2)
@@ -256,16 +294,18 @@ async def compare_models(
     """Generate images from multiple models using the same prompt for comparison.
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", or "illustrious"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
         positive_prompt: Text prompt for all models
         models: List of model checkpoint filenames to compare (2-6)
         negative_prompt: Negative prompt (things to avoid)
         width: Image width in pixels (256-2048)
         height: Image height in pixels (256-2048)
         steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30)
+        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
+            distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Fixed seed for fair comparison (default 42)
-        scheduler: Noise scheduler name
+        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
+            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
     """
     body = {
         "positive_prompt": positive_prompt,
@@ -294,7 +334,7 @@ async def list_models(
     """List available models.
 
     Args:
-        model_type: Model architecture — "sd15" or "sdxl"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
     """
     result = await client.list_models(model_type, resource_type)
@@ -310,7 +350,7 @@ async def get_model_metadata(
     """Get metadata for a specific model from its safetensors header.
 
     Args:
-        model_type: Model architecture — "sd15" or "sdxl"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
         model_name: Model filename
     """

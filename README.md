@@ -1,6 +1,6 @@
 # sd-api-mcp
 
-An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, and Illustrious XL pipelines for text-to-image generation, inpainting, model management, and model merging.
+An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, inpainting, model management, and model merging.
 
 It sits on top of the [SD API Backend](https://github.com/mcaimi/sd-api-backend.git) project.
 
@@ -124,7 +124,13 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `batch_generate` | Submit up to 10 generation requests at once |
 | `compare_models` | Generate with 2-6 models using the same prompt for comparison |
 
-All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, or `"illustrious"`.
+All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, or `"flux"`.
+
+Flux differs from the SD/SDXL pipelines in a few ways:
+- It uses flow-matching schedulers (e.g. `"FlowMatch Euler"`), not the SD/SDXL scheduler set returned by `list_schedulers`.
+- `cfg_scale` is a distilled guidance scale with a default of `3.5` instead of `7.0`.
+- `generate_image`/`submit_generate`/`inpaint_image`/`submit_inpaint` accept a Flux-only `true_cfg_scale` parameter (1-10, default 1.0); set it above 1.0 to enable `negative_prompt`.
+- `inpaint_image`/`submit_inpaint` accept a Flux-only `strength` parameter (0-1) controlling re-noising strength.
 
 ### Model Management
 
