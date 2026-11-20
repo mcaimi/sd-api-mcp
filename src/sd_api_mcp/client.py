@@ -147,3 +147,21 @@ async def batch_merge(body: dict) -> dict:
 
 async def recipe_merge(body: dict) -> dict:
     return await _request("POST", "/api/v1/merge/recipe", json=body)
+
+
+# --- Outputs ---
+
+async def list_outputs(limit: int = 24, offset: int = 0) -> dict:
+    return await _request("GET", "/api/v1/outputs/", params={"limit": limit, "offset": offset})
+
+
+async def get_output_image(output_id: str) -> tuple[bytes, str]:
+    return await _request_raw("GET", f"/api/v1/outputs/{quote(output_id)}/image")
+
+
+async def get_output_metadata(output_id: str) -> dict:
+    return await _request("GET", f"/api/v1/outputs/{quote(output_id)}/metadata")
+
+
+async def delete_output(output_id: str) -> dict:
+    return await _request("DELETE", f"/api/v1/outputs/{quote(output_id)}")

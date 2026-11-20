@@ -1,6 +1,6 @@
 # sd-api-mcp
 
-An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, and model merging.
+An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, model merging, and browsing saved outputs.
 
 It sits on top of the [SD API Backend](https://github.com/mcaimi/sd-api-backend.git) project.
 
@@ -151,6 +151,15 @@ These options are only sent to the pipelines that support them. Flux and Z-Image
 | `get_model_preview` | Return a model's Civitai preview image |
 
 `list_models` entries include Civitai details (when known), whether a preview is available, and for Flux checkpoints which components the file bundles.
+
+### Outputs
+
+| Tool | Description |
+|---|---|
+| `list_outputs` | List saved generation outputs, newest first (paginated) |
+| `get_output_image` | Return the image of a saved output |
+| `get_output_metadata` | Get the generation parameters of a saved output |
+| `delete_output` | Delete a saved output's image and metadata |
 
 ### Job Management
 

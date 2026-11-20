@@ -13,7 +13,8 @@ mcp = MCPServer(
         "inpainting, model comparison, and model merging. "
         "Generation jobs are asynchronous — use generate_image/inpaint_image for automatic "
         "polling, or submit_generate/submit_inpaint + get_job_status for manual control. "
-        "Leave optional sampling parameters unset to get each pipeline's backend defaults."
+        "Leave optional sampling parameters unset to get each pipeline's backend defaults. "
+        "Persisted results can be browsed with list_outputs and viewed with get_output_image."
     ),
 )
 
@@ -605,3 +606,53 @@ async def recipe_merge(
     job = await client.recipe_merge(body)
     result = await client.poll_job(job["job_id"])
     return json.dumps(result, indent=2)
+
+
+
+# ---------------------------------------------------------------------------
+# Outputs (persisted generation results)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_outputs(limit: int = 24, offset: int = 0) -> str:
+    """List persisted generation outputs, newest first.
+
+    Args:
+        limit: Maximum number of outputs to return
+        offset: Number of outputs to skip, for pagination
+    """
+    result = await client.list_outputs(limit, offset)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def get_output_image(output_id: str) -> Image:
+    """Get the image of a persisted generation output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    data, content_type = await client.get_output_image(output_id)
+    return _image(data, content_type)
+
+
+@mcp.tool()
+async def get_output_metadata(output_id: str) -> str:
+    """Get the generation parameters (prompt, steps, seed, LoRAs, ...) of a persisted output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    result = await client.get_output_metadata(output_id)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def delete_output(output_id: str) -> str:
+    """Delete the persisted image and metadata of a generation output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    await client.delete_output(output_id)
+    return json.dumps({"deleted": output_id}, indent=2)
