@@ -174,6 +174,8 @@ These options are only sent to the pipelines that support them. Flux and Z-Image
 | `batch_merge_models` | Merge a base model with multiple targets |
 | `recipe_merge` | Execute a multi-step merge recipe |
 
+All merge tools accept `output_dtype` (`"auto"` by default, which keeps the source precision).
+
 ## Examples
 
 ### Generate an image (agent perspective)

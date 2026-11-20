@@ -473,6 +473,7 @@ async def merge_models(
     method: str = "linear",
     alpha: float = 0.5,
     preserve_metadata: bool = True,
+    output_dtype: str = "auto",
 ) -> str:
     """Merge two model checkpoints. Submits the job and waits for completion.
 
@@ -484,6 +485,8 @@ async def merge_models(
         method: Merge method — "linear", "slerp", "additive", or "subtract"
         alpha: Merge strength (0.0-1.0)
         preserve_metadata: Whether to preserve model metadata
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
@@ -493,6 +496,7 @@ async def merge_models(
         "method": method,
         "alpha": alpha,
         "preserve_metadata": preserve_metadata,
+        "output_dtype": output_dtype,
     }
     job = await client.merge_models(body)
     result = await client.poll_job(job["job_id"])
@@ -508,6 +512,7 @@ async def batch_merge_models(
     alpha: float = 0.5,
     output_subdir: str = "batch_merged",
     preserve_metadata: bool = True,
+    output_dtype: str = "auto",
 ) -> str:
     """Merge a base model with multiple target models in batch. Waits for completion.
 
@@ -519,6 +524,8 @@ async def batch_merge_models(
         alpha: Merge strength (0.0-1.0)
         output_subdir: Output subdirectory name for merged models
         preserve_metadata: Whether to preserve model metadata
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
@@ -528,6 +535,7 @@ async def batch_merge_models(
         "alpha": alpha,
         "output_subdir": output_subdir,
         "preserve_metadata": preserve_metadata,
+        "output_dtype": output_dtype,
     }
     job = await client.batch_merge(body)
     result = await client.poll_job(job["job_id"])
@@ -540,6 +548,7 @@ async def recipe_merge(
     base_model: str,
     steps: list[dict],
     output_name: str,
+    output_dtype: str = "auto",
 ) -> str:
     """Execute a multi-step merge recipe. Each step merges the current result with a new target. Waits for completion.
 
@@ -548,12 +557,15 @@ async def recipe_merge(
         base_model: Base model checkpoint filename
         steps: List of merge steps, each with "target_model" (str), "method" (str), and "alpha" (float 0-1)
         output_name: Output checkpoint filename for the final merged model
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
         "base_model": base_model,
         "steps": steps,
         "output_name": output_name,
+        "output_dtype": output_dtype,
     }
     job = await client.recipe_merge(body)
     result = await client.poll_job(job["job_id"])
