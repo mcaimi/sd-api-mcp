@@ -1,6 +1,7 @@
 import json
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 
 from sd_api_mcp import client
 
@@ -57,6 +58,12 @@ def _build_generation_body(
     if pipeline in ("flux", "zimage"):
         fields["strength"] = strength
     return {k: v for k, v in fields.items() if v is not None}
+
+
+def _image(data: bytes, content_type: str) -> Image:
+    # content_type is e.g. "image/png"; Image wants just the format
+    fmt = content_type.split(";")[0].split("/")[-1] or "png"
+    return Image(data=data, format=fmt)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +372,11 @@ async def list_models(
 ) -> str:
     """List available models.
 
+    Each entry includes its name and path and, when known, Civitai details
+    (model/version IDs, base model, trained words), whether a preview image is
+    available (see get_model_preview), and for Flux checkpoints which components
+    (transformer, CLIP-L, T5-XXL, VAE) the file bundles.
+
     Args:
         model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
@@ -388,6 +400,25 @@ async def get_model_metadata(
     """
     result = await client.get_model_metadata(model_type, resource_type, model_name)
     return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def get_model_preview(
+    model_type: str,
+    resource_type: str,
+    model_name: str,
+) -> Image:
+    """Get the preview image of a model downloaded from (or identified on) Civitai.
+
+    Only available when list_models reports has_preview=true for the model.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        model_name: Model filename
+    """
+    data, content_type = await client.get_model_preview(model_type, resource_type, model_name)
+    return _image(data, content_type)
 
 
 # ---------------------------------------------------------------------------

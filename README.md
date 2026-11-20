@@ -148,6 +148,9 @@ These options are only sent to the pipelines that support them. Flux and Z-Image
 |---|---|
 | `list_models` | List available checkpoints, LoRAs, or VAEs |
 | `get_model_metadata` | Read metadata from a model's safetensors header |
+| `get_model_preview` | Return a model's Civitai preview image |
+
+`list_models` entries include Civitai details (when known), whether a preview is available, and for Flux checkpoints which components the file bundles.
 
 ### Job Management
 

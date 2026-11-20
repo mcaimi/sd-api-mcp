@@ -96,6 +96,10 @@ async def get_model_metadata(model_type: str, resource_type: str, model_name: st
     return await _request("GET", f"/api/v1/models/{model_type}/{resource_type}/{quote(model_name)}/metadata")
 
 
+async def get_model_preview(model_type: str, resource_type: str, model_name: str) -> tuple[bytes, str]:
+    return await _request_raw("GET", f"/api/v1/models/{model_type}/{resource_type}/{quote(model_name)}/preview")
+
+
 # --- Jobs ---
 
 async def list_jobs() -> list:
