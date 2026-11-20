@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+from urllib.parse import quote
 
 import httpx
 
@@ -7,22 +9,50 @@ import httpx
 SD_API_URL = os.environ.get("SD_API_URL", "http://localhost:8000")
 POLL_INTERVAL = float(os.environ.get("SD_POLL_INTERVAL", "2.0"))
 POLL_TIMEOUT = float(os.environ.get("SD_POLL_TIMEOUT", "600.0"))
+HTTP_TIMEOUT = float(os.environ.get("SD_HTTP_TIMEOUT", "30.0"))
 
 
 def _base_url() -> str:
     return SD_API_URL.rstrip("/")
 
 
-async def _request(method: str, path: str, **kwargs) -> dict:
-    async with httpx.AsyncClient(base_url=_base_url(), timeout=30.0) as client:
+def _check(resp: httpx.Response) -> None:
+    """Raise with the backend's error detail instead of a bare HTTP status."""
+    if resp.is_success:
+        return
+    try:
+        detail = resp.json().get("detail", resp.text)
+    except ValueError:
+        detail = resp.text
+    if not isinstance(detail, str):
+        detail = json.dumps(detail)
+    raise RuntimeError(f"{resp.request.method} {resp.request.url.path} -> {resp.status_code}: {detail}")
+
+
+async def _send(method: str, path: str, timeout: float | None = None, **kwargs) -> httpx.Response:
+    async with httpx.AsyncClient(base_url=_base_url(), timeout=timeout or HTTP_TIMEOUT) as client:
         resp = await client.request(method, path, **kwargs)
-        resp.raise_for_status()
-        return resp.json()
+        _check(resp)
+        return resp
 
 
-async def poll_job(job_id: str) -> dict:
+async def _request(method: str, path: str, timeout: float | None = None, **kwargs) -> dict:
+    resp = await _send(method, path, timeout, **kwargs)
+    if resp.status_code == 204 or not resp.content:
+        return {}
+    return resp.json()
+
+
+async def _request_raw(method: str, path: str, **kwargs) -> tuple[bytes, str]:
+    resp = await _send(method, path, **kwargs)
+    return resp.content, resp.headers.get("content-type", "application/octet-stream")
+
+
+async def poll_job(job_id: str, timeout: float | None = None) -> dict:
+    timeout = timeout or POLL_TIMEOUT
     elapsed = 0.0
-    while elapsed < POLL_TIMEOUT:
+    result: dict = {}
+    while elapsed < timeout:
         result = await _request("GET", f"/api/v1/jobs/{job_id}")
         status = result.get("status", "")
         if status == "completed":
@@ -32,7 +62,10 @@ async def poll_job(job_id: str) -> dict:
             raise RuntimeError(f"Job {job_id} {status}: {error}")
         await asyncio.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
-    raise TimeoutError(f"Job {job_id} did not complete within {POLL_TIMEOUT}s")
+    raise TimeoutError(
+        f"Job {job_id} did not complete within {timeout}s "
+        f"(status={result.get('status')}, progress={result.get('progress')}, detail={result.get('detail')})"
+    )
 
 
 # --- Generation ---
@@ -60,7 +93,7 @@ async def list_models(model_type: str, resource_type: str) -> dict:
 
 
 async def get_model_metadata(model_type: str, resource_type: str, model_name: str) -> dict:
-    return await _request("GET", f"/api/v1/models/{model_type}/{resource_type}/{model_name}/metadata")
+    return await _request("GET", f"/api/v1/models/{model_type}/{resource_type}/{quote(model_name)}/metadata")
 
 
 # --- Jobs ---

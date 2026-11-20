@@ -107,6 +107,7 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `SD_API_URL` | `http://localhost:8000` | Base URL of the Stable Diffusion API |
 | `SD_POLL_INTERVAL` | `2.0` | Seconds between job status polls |
 | `SD_POLL_TIMEOUT` | `600.0` | Maximum seconds to wait for job completion |
+| `SD_HTTP_TIMEOUT` | `30.0` | Timeout in seconds for a single HTTP request to the SD API |
 | `MCP_TRANSPORT` | `stdio` | Transport protocol (`stdio`, `sse`, `streamable-http`) |
 | `MCP_HOST` | `127.0.0.1` | Bind address for SSE/HTTP transports |
 | `MCP_PORT` | `8080` | Port for SSE/HTTP transports |
