@@ -14,7 +14,8 @@ mcp = MCPServer(
         "Generation jobs are asynchronous — use generate_image/inpaint_image for automatic "
         "polling, or submit_generate/submit_inpaint + get_job_status for manual control. "
         "Leave optional sampling parameters unset to get each pipeline's backend defaults. "
-        "Persisted results can be browsed with list_outputs and viewed with get_output_image."
+        "Persisted results can be browsed with list_outputs and viewed with get_output_image. "
+        "New models can be found and downloaded from Civitai with the civitai_* tools."
     ),
 )
 
@@ -656,3 +657,140 @@ async def delete_output(output_id: str) -> str:
     """
     await client.delete_output(output_id)
     return json.dumps({"deleted": output_id}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Civitai
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def civitai_status() -> str:
+    """Get the Civitai integration status: whether it is enabled, whether an API key
+    is configured, the NSFW default, the Civitai base models accepted per
+    model_type, the Civitai types per resource_type, and the valid sort/period options."""
+    result = await client.civitai_status()
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_search(
+    model_type: str,
+    resource_type: str,
+    query: str | None = None,
+    sort: str = "Highest Rated",
+    period: str = "AllTime",
+    nsfw: bool | None = None,
+    limit: int = 24,
+    cursor: str | None = None,
+) -> str:
+    """Search Civitai for models usable as model_type/resource_type.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        query: Optional search text (max 200 chars)
+        sort: "Highest Rated", "Most Downloaded", or "Newest"
+        period: "AllTime", "Year", "Month", "Week", or "Day"
+        nsfw: Include NSFW results; defaults to the backend's configured setting
+        limit: Results per page (1-100)
+        cursor: Pagination cursor — pass the next_cursor from the previous response
+    """
+    result = await client.civitai_search(
+        model_type, resource_type, query, sort, period, nsfw, limit, cursor,
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_get_model(
+    model_id: int,
+    model_type: str,
+    nsfw: bool | None = None,
+) -> str:
+    """Get a Civitai model with its versions and files.
+
+    Each file says whether it can be downloaded for model_type (and why not),
+    which resource directory it would go to, and whether it is already present locally.
+
+    Args:
+        model_id: Civitai model ID (from civitai_search)
+        model_type: Model architecture the files are checked against
+        nsfw: Include NSFW previews; defaults to the backend's configured setting
+    """
+    result = await client.civitai_get_model(model_id, model_type, nsfw)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_file_layout(version_id: int, file_id: int) -> str:
+    """Check which components a Flux checkpoint on Civitai bundles (transformer,
+    CLIP-L, T5-XXL, VAE) without downloading it, and which shared components it
+    would need that are missing locally. Most Flux checkpoints need a Civitai API key for this.
+
+    Args:
+        version_id: Civitai model version ID
+        file_id: Civitai file ID within that version
+    """
+    result = await client.civitai_file_layout(version_id, file_id)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_download(
+    version_id: int,
+    file_id: int,
+    model_type: str,
+    resource_type: str,
+    accept_mismatch: bool = False,
+    wait: bool = False,
+) -> str:
+    """Download a Civitai file into the model directories as a background job.
+
+    If the file's base model doesn't match model_type the backend refuses with
+    warnings; call again with accept_mismatch=true to download anyway.
+
+    Args:
+        version_id: Civitai model version ID
+        file_id: Civitai file ID within that version
+        model_type: Model architecture to install the file for
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        accept_mismatch: Download even if the base model doesn't match model_type
+        wait: Wait for the download to finish instead of returning the job ID
+            immediately (track it with get_job_status otherwise)
+    """
+    body = {
+        "version_id": version_id,
+        "file_id": file_id,
+        "model_type": model_type,
+        "resource_type": resource_type,
+        "accept_mismatch": accept_mismatch,
+    }
+    download = await client.civitai_download(body)
+    if wait:
+        download["job"] = await client.poll_job(download["job_id"], timeout=client.DOWNLOAD_TIMEOUT)
+    return json.dumps(download, indent=2)
+
+
+@mcp.tool()
+async def civitai_identify(
+    model_type: str,
+    resource_type: str,
+    model_name: str,
+) -> str:
+    """Look up a local model on Civitai by its SHA256 hash. On a match, saves its
+    Civitai details (and preview image) next to the model so list_models reports them.
+
+    Hashing a large checkpoint takes a while the first time; the hash is cached.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        model_name: Local model filename
+    """
+    body = {
+        "model_type": model_type,
+        "resource_type": resource_type,
+        "model_name": model_name,
+    }
+    result = await client.civitai_identify(body)
+    return json.dumps(result, indent=2)

@@ -9,7 +9,10 @@ import httpx
 SD_API_URL = os.environ.get("SD_API_URL", "http://localhost:8000")
 POLL_INTERVAL = float(os.environ.get("SD_POLL_INTERVAL", "2.0"))
 POLL_TIMEOUT = float(os.environ.get("SD_POLL_TIMEOUT", "600.0"))
+DOWNLOAD_TIMEOUT = float(os.environ.get("SD_DOWNLOAD_TIMEOUT", "3600.0"))
 HTTP_TIMEOUT = float(os.environ.get("SD_HTTP_TIMEOUT", "30.0"))
+# hashing a large checkpoint for Civitai identification can take minutes
+IDENTIFY_TIMEOUT = float(os.environ.get("SD_IDENTIFY_TIMEOUT", "600.0"))
 
 
 def _base_url() -> str:
@@ -165,3 +168,48 @@ async def get_output_metadata(output_id: str) -> dict:
 
 async def delete_output(output_id: str) -> dict:
     return await _request("DELETE", f"/api/v1/outputs/{quote(output_id)}")
+
+
+# --- Civitai ---
+
+def _params(**kwargs) -> dict:
+    return {k: v for k, v in kwargs.items() if v is not None}
+
+
+async def civitai_status() -> dict:
+    return await _request("GET", "/api/v1/civitai/status")
+
+
+async def civitai_search(
+    model_type: str,
+    resource_type: str,
+    query: str | None = None,
+    sort: str | None = None,
+    period: str | None = None,
+    nsfw: bool | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> dict:
+    params = _params(
+        model_type=model_type, resource_type=resource_type, query=query,
+        sort=sort, period=period, nsfw=nsfw, limit=limit, cursor=cursor,
+    )
+    return await _request("GET", "/api/v1/civitai/search", params=params)
+
+
+async def civitai_get_model(model_id: int, model_type: str, nsfw: bool | None = None) -> dict:
+    params = _params(model_type=model_type, nsfw=nsfw)
+    return await _request("GET", f"/api/v1/civitai/models/{model_id}", params=params)
+
+
+async def civitai_download(body: dict) -> dict:
+    return await _request("POST", "/api/v1/civitai/downloads", json=body)
+
+
+async def civitai_file_layout(version_id: int, file_id: int) -> dict:
+    params = {"version_id": version_id, "file_id": file_id}
+    return await _request("GET", "/api/v1/civitai/files/layout", params=params)
+
+
+async def civitai_identify(body: dict) -> dict:
+    return await _request("POST", "/api/v1/civitai/identify", timeout=IDENTIFY_TIMEOUT, json=body)

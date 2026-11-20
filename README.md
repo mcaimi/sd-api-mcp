@@ -1,6 +1,6 @@
 # sd-api-mcp
 
-An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, model merging, and browsing saved outputs.
+An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, model merging, browsing saved outputs, and finding and downloading models from Civitai.
 
 It sits on top of the [SD API Backend](https://github.com/mcaimi/sd-api-backend.git) project.
 
@@ -107,7 +107,9 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `SD_API_URL` | `http://localhost:8000` | Base URL of the Stable Diffusion API |
 | `SD_POLL_INTERVAL` | `2.0` | Seconds between job status polls |
 | `SD_POLL_TIMEOUT` | `600.0` | Maximum seconds to wait for job completion |
+| `SD_DOWNLOAD_TIMEOUT` | `3600.0` | Maximum seconds `civitai_download` waits when `wait=true` |
 | `SD_HTTP_TIMEOUT` | `30.0` | Timeout in seconds for a single HTTP request to the SD API |
+| `SD_IDENTIFY_TIMEOUT` | `600.0` | HTTP timeout for `civitai_identify` (hashes the model file) |
 | `MCP_TRANSPORT` | `stdio` | Transport protocol (`stdio`, `sse`, `streamable-http`) |
 | `MCP_HOST` | `127.0.0.1` | Bind address for SSE/HTTP transports |
 | `MCP_PORT` | `8080` | Port for SSE/HTTP transports |
@@ -160,6 +162,19 @@ These options are only sent to the pipelines that support them. Flux and Z-Image
 | `get_output_image` | Return the image of a saved output |
 | `get_output_metadata` | Get the generation parameters of a saved output |
 | `delete_output` | Delete a saved output's image and metadata |
+
+### Civitai
+
+| Tool | Description |
+|---|---|
+| `civitai_status` | Whether Civitai is enabled, plus the valid base models and sort/period options |
+| `civitai_search` | Search Civitai for checkpoints, LoRAs, or VAEs for a pipeline (paginated with `cursor`) |
+| `civitai_get_model` | Get a model's versions and files, with compatibility and whether each is already downloaded |
+| `civitai_file_layout` | Check which components a Flux checkpoint bundles, without downloading it |
+| `civitai_download` | Download a file as a background job (`wait=true` to block until it finishes) |
+| `civitai_identify` | Match a local model on Civitai by SHA256 and save its details and preview |
+
+If a file's base model doesn't match `model_type`, `civitai_download` fails and shows the backend's warnings. Call it again with `accept_mismatch=true` to download anyway.
 
 ### Job Management
 
