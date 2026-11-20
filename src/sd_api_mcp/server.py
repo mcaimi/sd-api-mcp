@@ -396,7 +396,7 @@ async def get_model_metadata(
 
 @mcp.tool()
 async def list_jobs() -> str:
-    """List all jobs with their current status, progress, and timing information."""
+    """List all jobs (generations, merges, Civitai downloads) with their status, progress, and timing information."""
     result = await client.list_jobs()
     return json.dumps(result, indent=2)
 
@@ -404,6 +404,10 @@ async def list_jobs() -> str:
 @mcp.tool()
 async def get_job_status(job_id: str) -> str:
     """Get the current status and result of a specific job.
+
+    The response includes the job type, the queue lane it runs in, whether it is
+    cancellable, progress (0-1), a job-specific detail object (e.g. download
+    progress), and the result or error once finished.
 
     Args:
         job_id: The job identifier returned when the job was submitted

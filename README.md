@@ -154,7 +154,7 @@ These options are only sent to the pipelines that support them. Flux and Z-Image
 | Tool | Description |
 |---|---|
 | `list_jobs` | List all jobs with status and progress |
-| `get_job_status` | Get status and result of a specific job |
+| `get_job_status` | Get status, progress, detail, and result of a specific job |
 | `cancel_job` | Cancel a pending or running job |
 
 ### System
