@@ -1,6 +1,6 @@
 # sd-api-mcp
 
-An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, inpainting, model management, and model merging.
+An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, and model merging.
 
 It sits on top of the [SD API Backend](https://github.com/mcaimi/sd-api-backend.git) project.
 
@@ -125,13 +125,22 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `batch_generate` | Submit up to 10 generation requests at once |
 | `compare_models` | Generate with 2-6 models using the same prompt for comparison |
 
-All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, or `"flux"`.
+All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, `"flux"`, or `"zimage"`.
 
-Flux differs from the SD/SDXL pipelines in a few ways:
-- It uses flow-matching schedulers (e.g. `"FlowMatch Euler"`); list them with `list_schedulers(model_type="flux")`.
-- `cfg_scale` is a distilled guidance scale with a default of `3.5` instead of `7.0`.
-- `generate_image`/`submit_generate`/`inpaint_image`/`submit_inpaint` accept a Flux-only `true_cfg_scale` parameter (1-10, default 1.0); set it above 1.0 to enable `negative_prompt`.
-- `inpaint_image`/`submit_inpaint` accept a Flux-only `strength` parameter (0-1) controlling re-noising strength.
+Optional sampling parameters (`width`, `height`, `steps`, `cfg_scale`, `scheduler`) are only sent when set, so leaving them out gives you the backend's defaults for that pipeline:
+
+| Pipeline | Size | Steps | CFG | Scheduler |
+|---|---|---|---|---|
+| `sd15` / `sdxl` / `illustrious` | 512×512 | 30 | 7.0 | `DPM++ 2M` |
+| `flux` | 512×512 | 30 | 3.5 (distilled guidance) | `FlowMatch Euler` |
+| `zimage` | 1024×1024 | per variant | per variant | `FlowMatch Euler` |
+
+Pipeline-specific options:
+- **Flux:** `true_cfg_scale` (1-10, default 1.0). Set it above 1.0 to enable `negative_prompt`.
+- **Z-Image:** `variant`, either `"turbo"` (default) or `"base"`.
+- **Flux and Z-Image inpainting:** `strength` (0-1) controls how strongly the masked area is re-noised.
+
+These options are only sent to the pipelines that support them. Flux and Z-Image use flow-matching schedulers; list them with `list_schedulers(model_type="flux")` or `list_schedulers(model_type="zimage")`.
 
 ### Model Management
 

@@ -8,29 +8,36 @@ mcp = MCPServer(
     name="sd-api",
     instructions=(
         "Stable Diffusion image generation API. "
-        "Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, "
+        "Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, "
         "inpainting, model comparison, and model merging. "
         "Generation jobs are asynchronous — use generate_image/inpaint_image for automatic "
-        "polling, or submit_generate/submit_inpaint + get_job_status for manual control."
+        "polling, or submit_generate/submit_inpaint + get_job_status for manual control. "
+        "Leave optional sampling parameters unset to get each pipeline's backend defaults."
     ),
 )
 
 
 def _build_generation_body(
+    pipeline: str,
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
+    strength: float | None = None,
 ) -> dict:
-    body: dict = {
+    """Build a request body, leaving out unset fields so the backend applies
+    its pipeline-specific defaults. Pipeline-only options are sent only to the
+    pipeline that understands them."""
+    fields: dict = {
         "positive_prompt": positive_prompt,
         "model_checkpoint": model_checkpoint,
         "negative_prompt": negative_prompt,
@@ -40,14 +47,16 @@ def _build_generation_body(
         "cfg_scale": cfg_scale,
         "seed": seed,
         "scheduler": scheduler,
+        "loras": loras or None,
+        "custom_vae": custom_vae or None,
     }
-    if loras:
-        body["loras"] = loras
-    if custom_vae:
-        body["custom_vae"] = custom_vae
-    if true_cfg_scale is not None:
-        body["true_cfg_scale"] = true_cfg_scale
-    return body
+    if pipeline == "flux":
+        fields["true_cfg_scale"] = true_cfg_scale
+    if pipeline == "zimage":
+        fields["variant"] = variant
+    if pipeline in ("flux", "zimage"):
+        fields["strength"] = strength
+    return {k: v for k, v in fields.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -60,40 +69,46 @@ async def generate_image(
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
 ) -> str:
     """Generate an image using Stable Diffusion. Waits for completion and returns the result.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        true_cfg_scale, variant,
     )
     job = await client.generate(pipeline, body)
     result = await client.poll_job(job["job_id"])
@@ -108,48 +123,49 @@ async def inpaint_image(
     image_base64: str,
     mask_base64: str,
     negative_prompt: str = "",
-    steps: int = 20,
-    cfg_scale: float = 7.0,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
     strength: float | None = None,
 ) -> str:
     """Inpaint an image using Stable Diffusion. Waits for completion and returns the result.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        steps: Number of inference steps (1-150). "zimage" picks a per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
-        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
-            0.6 if omitted. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
+        strength: Flux/Z-Image-only. Inpaint re-noising strength (0-1); the backend
+            picks a default if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
-        512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
+        None, None, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale, variant, strength,
     )
-    body.pop("width")
-    body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
-    if strength is not None:
-        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     result = await client.poll_job(job["job_id"])
     return json.dumps(result, indent=2)
@@ -165,40 +181,46 @@ async def submit_generate(
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
 ) -> str:
     """Submit an image generation job without waiting. Returns the job ID for manual polling.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        true_cfg_scale, variant,
     )
     job = await client.generate(pipeline, body)
     return json.dumps(job, indent=2)
@@ -212,48 +234,49 @@ async def submit_inpaint(
     image_base64: str,
     mask_base64: str,
     negative_prompt: str = "",
-    steps: int = 20,
-    cfg_scale: float = 7.0,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
     strength: float | None = None,
 ) -> str:
     """Submit an inpainting job without waiting. Returns the job ID for manual polling.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        steps: Number of inference steps (1-150). "zimage" picks a per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
-        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
-            0.6 if omitted. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
+        strength: Flux/Z-Image-only. Inpaint re-noising strength (0-1); the backend
+            picks a default if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
-        512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
+        None, None, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale, variant, strength,
     )
-    body.pop("width")
-    body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
-    if strength is not None:
-        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     return json.dumps(job, indent=2)
 
@@ -270,9 +293,11 @@ async def batch_generate(
     """Submit a batch of image generation requests (up to 10).
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         requests: List of generation request objects, each with at least "positive_prompt" and "model_checkpoint".
-            For "flux", requests may also include "true_cfg_scale" (float, 1-10, default 1.0)
+            Omitted fields take the pipeline's backend defaults. For "flux", requests may also
+            include "true_cfg_scale" (float, 1-10, default 1.0); for "zimage", "variant"
+            ("turbo" or "base")
     """
     result = await client.batch_generate(pipeline, {"requests": requests})
     return json.dumps(result, indent=2)
@@ -284,30 +309,35 @@ async def compare_models(
     positive_prompt: str,
     models: list[str],
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = 42,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
+    variant: str | None = None,
 ) -> str:
     """Generate images from multiple models using the same prompt for comparison.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt for all models
         models: List of model checkpoint filenames to compare (2-6)
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Fixed seed for fair comparison (default 42)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler")
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
-    body = {
+    fields = {
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
         "models": models,
@@ -317,7 +347,9 @@ async def compare_models(
         "cfg_scale": cfg_scale,
         "seed": seed,
         "scheduler": scheduler,
+        "variant": variant if pipeline == "zimage" else None,
     }
+    body = {k: v for k, v in fields.items() if v is not None}
     result = await client.compare_models(pipeline, body)
     return json.dumps(result, indent=2)
 
@@ -334,7 +366,7 @@ async def list_models(
     """List available models.
 
     Args:
-        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
     """
     result = await client.list_models(model_type, resource_type)
@@ -350,7 +382,7 @@ async def get_model_metadata(
     """Get metadata for a specific model from its safetensors header.
 
     Args:
-        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
         model_name: Model filename
     """
