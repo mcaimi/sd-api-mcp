@@ -128,7 +128,7 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, or `"flux"`.
 
 Flux differs from the SD/SDXL pipelines in a few ways:
-- It uses flow-matching schedulers (e.g. `"FlowMatch Euler"`), not the SD/SDXL scheduler set returned by `list_schedulers`.
+- It uses flow-matching schedulers (e.g. `"FlowMatch Euler"`); list them with `list_schedulers(model_type="flux")`.
 - `cfg_scale` is a distilled guidance scale with a default of `3.5` instead of `7.0`.
 - `generate_image`/`submit_generate`/`inpaint_image`/`submit_inpaint` accept a Flux-only `true_cfg_scale` parameter (1-10, default 1.0); set it above 1.0 to enable `negative_prompt`.
 - `inpaint_image`/`submit_inpaint` accept a Flux-only `strength` parameter (0-1) controlling re-noising strength.
@@ -154,7 +154,7 @@ Flux differs from the SD/SDXL pipelines in a few ways:
 |---|---|
 | `health_check` | Check if the SD API is reachable |
 | `system_info` | Get GPU, cache, and queue statistics |
-| `list_schedulers` | List available noise schedulers |
+| `list_schedulers` | List available noise schedulers (optionally per `model_type`) |
 | `get_app_settings` | Get current configuration parameters |
 
 ### Model Merging

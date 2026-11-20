@@ -122,8 +122,9 @@ async def system_info() -> dict:
 
 # --- Informational ---
 
-async def list_schedulers() -> list:
-    return await _request("GET", "/api/v1/info/schedulers")
+async def list_schedulers(model_type: str | None = None) -> list:
+    params = {"model_type": model_type} if model_type else None
+    return await _request("GET", "/api/v1/info/schedulers", params=params)
 
 
 async def get_app_settings() -> dict:

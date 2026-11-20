@@ -84,7 +84,7 @@ async def generate_image(
             distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
         scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
@@ -131,7 +131,7 @@ async def inpaint_image(
             distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
         scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
@@ -189,7 +189,7 @@ async def submit_generate(
             distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
         scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
@@ -235,7 +235,7 @@ async def submit_inpaint(
             distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Random seed (-1 for random)
         scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
@@ -305,7 +305,7 @@ async def compare_models(
             distilled guidance scale; the backend default is 3.5 rather than 7.0
         seed: Fixed seed for fair comparison (default 42)
         scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+            (e.g. "FlowMatch Euler"); see list_schedulers(model_type="flux")
     """
     body = {
         "positive_prompt": positive_prompt,
@@ -410,9 +410,14 @@ async def system_info() -> str:
 
 
 @mcp.tool()
-async def list_schedulers() -> str:
-    """List all available noise schedulers that can be used for image generation."""
-    result = await client.list_schedulers()
+async def list_schedulers(model_type: str | None = None) -> str:
+    """List the noise schedulers available for image generation.
+
+    Args:
+        model_type: Optional pipeline. Without it, lists the SD1.5/SDXL/Illustrious
+            schedulers; pass "flux" or "zimage" for their flow-matching schedulers
+    """
+    result = await client.list_schedulers(model_type)
     return json.dumps(result, indent=2)
 
 
