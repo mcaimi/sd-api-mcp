@@ -1,6 +1,6 @@
 # sd-api-mcp
 
-An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, inpainting, model management, and model merging.
+An MCP (Model Context Protocol) server that exposes a Stable Diffusion REST API to AI agents. Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, inpainting, model management, model merging, browsing saved outputs, and finding and downloading models from Civitai.
 
 It sits on top of the [SD API Backend](https://github.com/mcaimi/sd-api-backend.git) project.
 
@@ -107,6 +107,9 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `SD_API_URL` | `http://localhost:8000` | Base URL of the Stable Diffusion API |
 | `SD_POLL_INTERVAL` | `2.0` | Seconds between job status polls |
 | `SD_POLL_TIMEOUT` | `600.0` | Maximum seconds to wait for job completion |
+| `SD_DOWNLOAD_TIMEOUT` | `3600.0` | Maximum seconds `civitai_download` waits when `wait=true` |
+| `SD_HTTP_TIMEOUT` | `30.0` | Timeout in seconds for a single HTTP request to the SD API |
+| `SD_IDENTIFY_TIMEOUT` | `600.0` | HTTP timeout for `civitai_identify` (hashes the model file) |
 | `MCP_TRANSPORT` | `stdio` | Transport protocol (`stdio`, `sse`, `streamable-http`) |
 | `MCP_HOST` | `127.0.0.1` | Bind address for SSE/HTTP transports |
 | `MCP_PORT` | `8080` | Port for SSE/HTTP transports |
@@ -124,13 +127,22 @@ For SSE or Streamable HTTP transports, start the server separately and use a rem
 | `batch_generate` | Submit up to 10 generation requests at once |
 | `compare_models` | Generate with 2-6 models using the same prompt for comparison |
 
-All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, or `"flux"`.
+All generation tools accept a `pipeline` parameter: `"sd15"`, `"sdxl"`, `"illustrious"`, `"flux"`, or `"zimage"`.
 
-Flux differs from the SD/SDXL pipelines in a few ways:
-- It uses flow-matching schedulers (e.g. `"FlowMatch Euler"`), not the SD/SDXL scheduler set returned by `list_schedulers`.
-- `cfg_scale` is a distilled guidance scale with a default of `3.5` instead of `7.0`.
-- `generate_image`/`submit_generate`/`inpaint_image`/`submit_inpaint` accept a Flux-only `true_cfg_scale` parameter (1-10, default 1.0); set it above 1.0 to enable `negative_prompt`.
-- `inpaint_image`/`submit_inpaint` accept a Flux-only `strength` parameter (0-1) controlling re-noising strength.
+Optional sampling parameters (`width`, `height`, `steps`, `cfg_scale`, `scheduler`) are only sent when set, so leaving them out gives you the backend's defaults for that pipeline:
+
+| Pipeline | Size | Steps | CFG | Scheduler |
+|---|---|---|---|---|
+| `sd15` / `sdxl` / `illustrious` | 512×512 | 30 | 7.0 | `DPM++ 2M` |
+| `flux` | 512×512 | 30 | 3.5 (distilled guidance) | `FlowMatch Euler` |
+| `zimage` | 1024×1024 | per variant | per variant | `FlowMatch Euler` |
+
+Pipeline-specific options:
+- **Flux:** `true_cfg_scale` (1-10, default 1.0). Set it above 1.0 to enable `negative_prompt`.
+- **Z-Image:** `variant`, either `"turbo"` (default) or `"base"`.
+- **Flux and Z-Image inpainting:** `strength` (0-1) controls how strongly the masked area is re-noised.
+
+These options are only sent to the pipelines that support them. Flux and Z-Image use flow-matching schedulers; list them with `list_schedulers(model_type="flux")` or `list_schedulers(model_type="zimage")`.
 
 ### Model Management
 
@@ -138,13 +150,38 @@ Flux differs from the SD/SDXL pipelines in a few ways:
 |---|---|
 | `list_models` | List available checkpoints, LoRAs, or VAEs |
 | `get_model_metadata` | Read metadata from a model's safetensors header |
+| `get_model_preview` | Return a model's Civitai preview image |
+
+`list_models` entries include Civitai details (when known), whether a preview is available, and for Flux checkpoints which components the file bundles.
+
+### Outputs
+
+| Tool | Description |
+|---|---|
+| `list_outputs` | List saved generation outputs, newest first (paginated) |
+| `get_output_image` | Return the image of a saved output |
+| `get_output_metadata` | Get the generation parameters of a saved output |
+| `delete_output` | Delete a saved output's image and metadata |
+
+### Civitai
+
+| Tool | Description |
+|---|---|
+| `civitai_status` | Whether Civitai is enabled, plus the valid base models and sort/period options |
+| `civitai_search` | Search Civitai for checkpoints, LoRAs, or VAEs for a pipeline (paginated with `cursor`) |
+| `civitai_get_model` | Get a model's versions and files, with compatibility and whether each is already downloaded |
+| `civitai_file_layout` | Check which components a Flux checkpoint bundles, without downloading it |
+| `civitai_download` | Download a file as a background job (`wait=true` to block until it finishes) |
+| `civitai_identify` | Match a local model on Civitai by SHA256 and save its details and preview |
+
+If a file's base model doesn't match `model_type`, `civitai_download` fails and shows the backend's warnings. Call it again with `accept_mismatch=true` to download anyway.
 
 ### Job Management
 
 | Tool | Description |
 |---|---|
 | `list_jobs` | List all jobs with status and progress |
-| `get_job_status` | Get status and result of a specific job |
+| `get_job_status` | Get status, progress, detail, and result of a specific job |
 | `cancel_job` | Cancel a pending or running job |
 
 ### System
@@ -153,7 +190,7 @@ Flux differs from the SD/SDXL pipelines in a few ways:
 |---|---|
 | `health_check` | Check if the SD API is reachable |
 | `system_info` | Get GPU, cache, and queue statistics |
-| `list_schedulers` | List available noise schedulers |
+| `list_schedulers` | List available noise schedulers (optionally per `model_type`) |
 | `get_app_settings` | Get current configuration parameters |
 
 ### Model Merging
@@ -163,6 +200,8 @@ Flux differs from the SD/SDXL pipelines in a few ways:
 | `merge_models` | Merge two checkpoints (linear, slerp, additive, subtract) |
 | `batch_merge_models` | Merge a base model with multiple targets |
 | `recipe_merge` | Execute a multi-step merge recipe |
+
+All merge tools accept `output_dtype` (`"auto"` by default, which keeps the source precision).
 
 ## Examples
 

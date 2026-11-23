@@ -1,6 +1,7 @@
 import json
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 
 from sd_api_mcp import client
 
@@ -8,29 +9,38 @@ mcp = MCPServer(
     name="sd-api",
     instructions=(
         "Stable Diffusion image generation API. "
-        "Supports SD1.5, SDXL, Illustrious XL, and Flux pipelines for text-to-image generation, "
+        "Supports SD1.5, SDXL, Illustrious XL, Flux, and Z-Image pipelines for text-to-image generation, "
         "inpainting, model comparison, and model merging. "
         "Generation jobs are asynchronous — use generate_image/inpaint_image for automatic "
-        "polling, or submit_generate/submit_inpaint + get_job_status for manual control."
+        "polling, or submit_generate/submit_inpaint + get_job_status for manual control. "
+        "Leave optional sampling parameters unset to get each pipeline's backend defaults. "
+        "Persisted results can be browsed with list_outputs and viewed with get_output_image. "
+        "New models can be found and downloaded from Civitai with the civitai_* tools."
     ),
 )
 
 
 def _build_generation_body(
+    pipeline: str,
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
+    strength: float | None = None,
 ) -> dict:
-    body: dict = {
+    """Build a request body, leaving out unset fields so the backend applies
+    its pipeline-specific defaults. Pipeline-only options are sent only to the
+    pipeline that understands them."""
+    fields: dict = {
         "positive_prompt": positive_prompt,
         "model_checkpoint": model_checkpoint,
         "negative_prompt": negative_prompt,
@@ -40,14 +50,22 @@ def _build_generation_body(
         "cfg_scale": cfg_scale,
         "seed": seed,
         "scheduler": scheduler,
+        "loras": loras or None,
+        "custom_vae": custom_vae or None,
     }
-    if loras:
-        body["loras"] = loras
-    if custom_vae:
-        body["custom_vae"] = custom_vae
-    if true_cfg_scale is not None:
-        body["true_cfg_scale"] = true_cfg_scale
-    return body
+    if pipeline == "flux":
+        fields["true_cfg_scale"] = true_cfg_scale
+    if pipeline == "zimage":
+        fields["variant"] = variant
+    if pipeline in ("flux", "zimage"):
+        fields["strength"] = strength
+    return {k: v for k, v in fields.items() if v is not None}
+
+
+def _image(data: bytes, content_type: str) -> Image:
+    # content_type is e.g. "image/png"; Image wants just the format
+    fmt = content_type.split(";")[0].split("/")[-1] or "png"
+    return Image(data=data, format=fmt)
 
 
 # ---------------------------------------------------------------------------
@@ -60,40 +78,46 @@ async def generate_image(
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
 ) -> str:
     """Generate an image using Stable Diffusion. Waits for completion and returns the result.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        true_cfg_scale, variant,
     )
     job = await client.generate(pipeline, body)
     result = await client.poll_job(job["job_id"])
@@ -108,48 +132,49 @@ async def inpaint_image(
     image_base64: str,
     mask_base64: str,
     negative_prompt: str = "",
-    steps: int = 20,
-    cfg_scale: float = 7.0,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
     strength: float | None = None,
 ) -> str:
     """Inpaint an image using Stable Diffusion. Waits for completion and returns the result.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        steps: Number of inference steps (1-150). "zimage" picks a per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
-        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
-            0.6 if omitted. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
+        strength: Flux/Z-Image-only. Inpaint re-noising strength (0-1); the backend
+            picks a default if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
-        512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
+        None, None, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale, variant, strength,
     )
-    body.pop("width")
-    body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
-    if strength is not None:
-        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     result = await client.poll_job(job["job_id"])
     return json.dumps(result, indent=2)
@@ -165,40 +190,46 @@ async def submit_generate(
     positive_prompt: str,
     model_checkpoint: str,
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
 ) -> str:
     """Submit an image generation job without waiting. Returns the job ID for manual polling.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing the desired image
         model_checkpoint: Model checkpoint filename to use
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
         width, height, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        true_cfg_scale, variant,
     )
     job = await client.generate(pipeline, body)
     return json.dumps(job, indent=2)
@@ -212,48 +243,49 @@ async def submit_inpaint(
     image_base64: str,
     mask_base64: str,
     negative_prompt: str = "",
-    steps: int = 20,
-    cfg_scale: float = 7.0,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = -1,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
     loras: list[dict] | None = None,
     custom_vae: str | None = None,
     true_cfg_scale: float | None = None,
+    variant: str | None = None,
     strength: float | None = None,
 ) -> str:
     """Submit an inpainting job without waiting. Returns the job ID for manual polling.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt describing what to paint in the masked region
         model_checkpoint: Model checkpoint filename to use
         image_base64: Base64-encoded input image
         mask_base64: Base64-encoded mask image (white = inpaint region)
         negative_prompt: Negative prompt (things to avoid)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        steps: Number of inference steps (1-150). "zimage" picks a per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Random seed (-1 for random)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler"). See
+            list_schedulers(model_type=...)
         loras: Optional list of LoRA configs, each with "name" (str) and optional "strength" (float 0-1)
         custom_vae: Optional custom VAE checkpoint filename
         true_cfg_scale: Flux-only. True CFG scale (1-10, default 1.0); set >1.0 to
             enable negative_prompt. Ignored by other pipelines
-        strength: Flux-only. Inpaint re-noising strength (0-1); backend defaults to
-            0.6 if omitted. Ignored by other pipelines
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
+        strength: Flux/Z-Image-only. Inpaint re-noising strength (0-1); the backend
+            picks a default if omitted. Ignored by other pipelines
     """
     body = _build_generation_body(
-        positive_prompt, model_checkpoint, negative_prompt,
-        512, 512, steps, cfg_scale, seed, scheduler, loras, custom_vae,
-        true_cfg_scale,
+        pipeline, positive_prompt, model_checkpoint, negative_prompt,
+        None, None, steps, cfg_scale, seed, scheduler, loras, custom_vae,
+        true_cfg_scale, variant, strength,
     )
-    body.pop("width")
-    body.pop("height")
     body["image_base64"] = image_base64
     body["mask_base64"] = mask_base64
-    if strength is not None:
-        body["strength"] = strength
     job = await client.inpaint(pipeline, body)
     return json.dumps(job, indent=2)
 
@@ -270,9 +302,11 @@ async def batch_generate(
     """Submit a batch of image generation requests (up to 10).
 
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         requests: List of generation request objects, each with at least "positive_prompt" and "model_checkpoint".
-            For "flux", requests may also include "true_cfg_scale" (float, 1-10, default 1.0)
+            Omitted fields take the pipeline's backend defaults. For "flux", requests may also
+            include "true_cfg_scale" (float, 1-10, default 1.0); for "zimage", "variant"
+            ("turbo" or "base")
     """
     result = await client.batch_generate(pipeline, {"requests": requests})
     return json.dumps(result, indent=2)
@@ -284,30 +318,35 @@ async def compare_models(
     positive_prompt: str,
     models: list[str],
     negative_prompt: str = "",
-    width: int = 512,
-    height: int = 512,
-    steps: int = 30,
-    cfg_scale: float = 7.0,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
     seed: int = 42,
-    scheduler: str = "DPM++ 2M",
+    scheduler: str | None = None,
+    variant: str | None = None,
 ) -> str:
     """Generate images from multiple models using the same prompt for comparison.
 
+    Leave optional sampling parameters unset to use the pipeline's backend defaults.
+
     Args:
-        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", or "flux"
+        pipeline: Pipeline to use — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         positive_prompt: Text prompt for all models
         models: List of model checkpoint filenames to compare (2-6)
         negative_prompt: Negative prompt (things to avoid)
-        width: Image width in pixels (256-2048)
-        height: Image height in pixels (256-2048)
-        steps: Number of inference steps (1-150)
-        cfg_scale: Classifier-free guidance scale (1-30). For "flux" this is the
-            distilled guidance scale; the backend default is 3.5 rather than 7.0
+        width: Image width in pixels (256-2048). Default 512, or 1024 for "zimage"
+        height: Image height in pixels (256-2048). Default 512, or 1024 for "zimage"
+        steps: Number of inference steps (1-150). Default 30; "zimage" picks a
+            per-variant default
+        cfg_scale: Classifier-free guidance scale (0-30). Default 7.0; 3.5 for
+            "flux" (distilled guidance); "zimage" picks a per-variant default
         seed: Fixed seed for fair comparison (default 42)
-        scheduler: Noise scheduler name. "flux" uses flow-matching schedulers
-            (e.g. "FlowMatch Euler") which are not in list_schedulers' SD/SDXL set
+        scheduler: Noise scheduler name. Default "DPM++ 2M"; "flux" and "zimage"
+            use flow-matching schedulers (default "FlowMatch Euler")
+        variant: Z-Image-only. "turbo" (default) or "base". Ignored by other pipelines
     """
-    body = {
+    fields = {
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
         "models": models,
@@ -317,7 +356,9 @@ async def compare_models(
         "cfg_scale": cfg_scale,
         "seed": seed,
         "scheduler": scheduler,
+        "variant": variant if pipeline == "zimage" else None,
     }
+    body = {k: v for k, v in fields.items() if v is not None}
     result = await client.compare_models(pipeline, body)
     return json.dumps(result, indent=2)
 
@@ -333,8 +374,13 @@ async def list_models(
 ) -> str:
     """List available models.
 
+    Each entry includes its name and path and, when known, Civitai details
+    (model/version IDs, base model, trained words), whether a preview image is
+    available (see get_model_preview), and for Flux checkpoints which components
+    (transformer, CLIP-L, T5-XXL, VAE) the file bundles.
+
     Args:
-        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
     """
     result = await client.list_models(model_type, resource_type)
@@ -350,12 +396,31 @@ async def get_model_metadata(
     """Get metadata for a specific model from its safetensors header.
 
     Args:
-        model_type: Model architecture — "sd15", "sdxl", "illustrious", or "flux"
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
         resource_type: Resource category — "checkpoints", "loras", or "vaes"
         model_name: Model filename
     """
     result = await client.get_model_metadata(model_type, resource_type, model_name)
     return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def get_model_preview(
+    model_type: str,
+    resource_type: str,
+    model_name: str,
+) -> Image:
+    """Get the preview image of a model downloaded from (or identified on) Civitai.
+
+    Only available when list_models reports has_preview=true for the model.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        model_name: Model filename
+    """
+    data, content_type = await client.get_model_preview(model_type, resource_type, model_name)
+    return _image(data, content_type)
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +429,7 @@ async def get_model_metadata(
 
 @mcp.tool()
 async def list_jobs() -> str:
-    """List all jobs with their current status, progress, and timing information."""
+    """List all jobs (generations, merges, Civitai downloads) with their status, progress, and timing information."""
     result = await client.list_jobs()
     return json.dumps(result, indent=2)
 
@@ -372,6 +437,10 @@ async def list_jobs() -> str:
 @mcp.tool()
 async def get_job_status(job_id: str) -> str:
     """Get the current status and result of a specific job.
+
+    The response includes the job type, the queue lane it runs in, whether it is
+    cancellable, progress (0-1), a job-specific detail object (e.g. download
+    progress), and the result or error once finished.
 
     Args:
         job_id: The job identifier returned when the job was submitted
@@ -410,9 +479,14 @@ async def system_info() -> str:
 
 
 @mcp.tool()
-async def list_schedulers() -> str:
-    """List all available noise schedulers that can be used for image generation."""
-    result = await client.list_schedulers()
+async def list_schedulers(model_type: str | None = None) -> str:
+    """List the noise schedulers available for image generation.
+
+    Args:
+        model_type: Optional pipeline. Without it, lists the SD1.5/SDXL/Illustrious
+            schedulers; pass "flux" or "zimage" for their flow-matching schedulers
+    """
+    result = await client.list_schedulers(model_type)
     return json.dumps(result, indent=2)
 
 
@@ -436,6 +510,7 @@ async def merge_models(
     method: str = "linear",
     alpha: float = 0.5,
     preserve_metadata: bool = True,
+    output_dtype: str = "auto",
 ) -> str:
     """Merge two model checkpoints. Submits the job and waits for completion.
 
@@ -447,6 +522,8 @@ async def merge_models(
         method: Merge method — "linear", "slerp", "additive", or "subtract"
         alpha: Merge strength (0.0-1.0)
         preserve_metadata: Whether to preserve model metadata
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
@@ -456,6 +533,7 @@ async def merge_models(
         "method": method,
         "alpha": alpha,
         "preserve_metadata": preserve_metadata,
+        "output_dtype": output_dtype,
     }
     job = await client.merge_models(body)
     result = await client.poll_job(job["job_id"])
@@ -471,6 +549,7 @@ async def batch_merge_models(
     alpha: float = 0.5,
     output_subdir: str = "batch_merged",
     preserve_metadata: bool = True,
+    output_dtype: str = "auto",
 ) -> str:
     """Merge a base model with multiple target models in batch. Waits for completion.
 
@@ -482,6 +561,8 @@ async def batch_merge_models(
         alpha: Merge strength (0.0-1.0)
         output_subdir: Output subdirectory name for merged models
         preserve_metadata: Whether to preserve model metadata
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
@@ -491,6 +572,7 @@ async def batch_merge_models(
         "alpha": alpha,
         "output_subdir": output_subdir,
         "preserve_metadata": preserve_metadata,
+        "output_dtype": output_dtype,
     }
     job = await client.batch_merge(body)
     result = await client.poll_job(job["job_id"])
@@ -503,6 +585,7 @@ async def recipe_merge(
     base_model: str,
     steps: list[dict],
     output_name: str,
+    output_dtype: str = "auto",
 ) -> str:
     """Execute a multi-step merge recipe. Each step merges the current result with a new target. Waits for completion.
 
@@ -511,13 +594,203 @@ async def recipe_merge(
         base_model: Base model checkpoint filename
         steps: List of merge steps, each with "target_model" (str), "method" (str), and "alpha" (float 0-1)
         output_name: Output checkpoint filename for the final merged model
+        output_dtype: Precision of the saved checkpoint (e.g. "fp16", "bf16", "fp32");
+            "auto" keeps the source precision
     """
     body = {
         "model_type": model_type,
         "base_model": base_model,
         "steps": steps,
         "output_name": output_name,
+        "output_dtype": output_dtype,
     }
     job = await client.recipe_merge(body)
     result = await client.poll_job(job["job_id"])
+    return json.dumps(result, indent=2)
+
+
+
+# ---------------------------------------------------------------------------
+# Outputs (persisted generation results)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_outputs(limit: int = 24, offset: int = 0) -> str:
+    """List persisted generation outputs, newest first.
+
+    Args:
+        limit: Maximum number of outputs to return
+        offset: Number of outputs to skip, for pagination
+    """
+    result = await client.list_outputs(limit, offset)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def get_output_image(output_id: str) -> Image:
+    """Get the image of a persisted generation output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    data, content_type = await client.get_output_image(output_id)
+    return _image(data, content_type)
+
+
+@mcp.tool()
+async def get_output_metadata(output_id: str) -> str:
+    """Get the generation parameters (prompt, steps, seed, LoRAs, ...) of a persisted output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    result = await client.get_output_metadata(output_id)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def delete_output(output_id: str) -> str:
+    """Delete the persisted image and metadata of a generation output.
+
+    Args:
+        output_id: Output identifier from list_outputs
+    """
+    await client.delete_output(output_id)
+    return json.dumps({"deleted": output_id}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Civitai
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def civitai_status() -> str:
+    """Get the Civitai integration status: whether it is enabled, whether an API key
+    is configured, the NSFW default, the Civitai base models accepted per
+    model_type, the Civitai types per resource_type, and the valid sort/period options."""
+    result = await client.civitai_status()
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_search(
+    model_type: str,
+    resource_type: str,
+    query: str | None = None,
+    sort: str = "Highest Rated",
+    period: str = "AllTime",
+    nsfw: bool | None = None,
+    limit: int = 24,
+    cursor: str | None = None,
+) -> str:
+    """Search Civitai for models usable as model_type/resource_type.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        query: Optional search text (max 200 chars)
+        sort: "Highest Rated", "Most Downloaded", or "Newest"
+        period: "AllTime", "Year", "Month", "Week", or "Day"
+        nsfw: Include NSFW results; defaults to the backend's configured setting
+        limit: Results per page (1-100)
+        cursor: Pagination cursor — pass the next_cursor from the previous response
+    """
+    result = await client.civitai_search(
+        model_type, resource_type, query, sort, period, nsfw, limit, cursor,
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_get_model(
+    model_id: int,
+    model_type: str,
+    nsfw: bool | None = None,
+) -> str:
+    """Get a Civitai model with its versions and files.
+
+    Each file says whether it can be downloaded for model_type (and why not),
+    which resource directory it would go to, and whether it is already present locally.
+
+    Args:
+        model_id: Civitai model ID (from civitai_search)
+        model_type: Model architecture the files are checked against
+        nsfw: Include NSFW previews; defaults to the backend's configured setting
+    """
+    result = await client.civitai_get_model(model_id, model_type, nsfw)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_file_layout(version_id: int, file_id: int) -> str:
+    """Check which components a Flux checkpoint on Civitai bundles (transformer,
+    CLIP-L, T5-XXL, VAE) without downloading it, and which shared components it
+    would need that are missing locally. Most Flux checkpoints need a Civitai API key for this.
+
+    Args:
+        version_id: Civitai model version ID
+        file_id: Civitai file ID within that version
+    """
+    result = await client.civitai_file_layout(version_id, file_id)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def civitai_download(
+    version_id: int,
+    file_id: int,
+    model_type: str,
+    resource_type: str,
+    accept_mismatch: bool = False,
+    wait: bool = False,
+) -> str:
+    """Download a Civitai file into the model directories as a background job.
+
+    If the file's base model doesn't match model_type the backend refuses with
+    warnings; call again with accept_mismatch=true to download anyway.
+
+    Args:
+        version_id: Civitai model version ID
+        file_id: Civitai file ID within that version
+        model_type: Model architecture to install the file for
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        accept_mismatch: Download even if the base model doesn't match model_type
+        wait: Wait for the download to finish instead of returning the job ID
+            immediately (track it with get_job_status otherwise)
+    """
+    body = {
+        "version_id": version_id,
+        "file_id": file_id,
+        "model_type": model_type,
+        "resource_type": resource_type,
+        "accept_mismatch": accept_mismatch,
+    }
+    download = await client.civitai_download(body)
+    if wait:
+        download["job"] = await client.poll_job(download["job_id"], timeout=client.DOWNLOAD_TIMEOUT)
+    return json.dumps(download, indent=2)
+
+
+@mcp.tool()
+async def civitai_identify(
+    model_type: str,
+    resource_type: str,
+    model_name: str,
+) -> str:
+    """Look up a local model on Civitai by its SHA256 hash. On a match, saves its
+    Civitai details (and preview image) next to the model so list_models reports them.
+
+    Hashing a large checkpoint takes a while the first time; the hash is cached.
+
+    Args:
+        model_type: Model architecture — "sd15", "sdxl", "illustrious", "flux", or "zimage"
+        resource_type: Resource category — "checkpoints", "loras", or "vaes"
+        model_name: Local model filename
+    """
+    body = {
+        "model_type": model_type,
+        "resource_type": resource_type,
+        "model_name": model_name,
+    }
+    result = await client.civitai_identify(body)
     return json.dumps(result, indent=2)
